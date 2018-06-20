@@ -25,7 +25,7 @@ object SbtCommons {
   val CryptoV = "0.0.1"
 
   val Cats1V = "1.1.0"
-  val CatsEffectV = "1.0.0-RC"
+  val CatsEffectV = "1.0.0-RC2"
   val RocksDbV = "5.9.2"
   val TypeSafeConfV = "1.3.2"
   val FicusV = "1.4.3"
