@@ -21,6 +21,8 @@ import cats.data.StateT
 import cats.effect.LiftIO
 import cats.syntax.eq._
 import cats.syntax.applicative._
+import cats.syntax.functor._
+import cats.syntax.flatMap._
 import cats.{Monad, Show}
 import fluence.kad.protocol.{KademliaRpc, Key, Node}
 
@@ -139,19 +141,19 @@ object Bucket {
    * Read ops are pure functions
    * @tparam C Node contacts
    */
-  trait ReadOps[C] {
+  trait ReadOps[F[_], C] {
 
     /**
      * Returns current bucket state
      * @param bucketId Bucket id, 0 to [[Key.BitLength]]
      */
-    def read(bucketId: Int): Bucket[C]
+    def read(bucketId: Int): F[Bucket[C]]
 
     /**
      * Returns current bucket state
      * @param distanceKey Distance to get leading zeros from
      */
-    def read(distanceKey: Key): Bucket[C] =
+    def read(distanceKey: Key): F[Bucket[C]] =
       read(distanceKey.zerosPrefixLen)
   }
 
@@ -160,7 +162,7 @@ object Bucket {
    * @tparam F Effect
    * @tparam C Node contacts
    */
-  trait WriteOps[F[_], C] extends ReadOps[C] {
+  trait WriteOps[F[_], C] extends ReadOps[F, C] {
 
     /**
      * Runs a mutation on bucket, blocks the bucket from writes until mutation is complete
@@ -182,12 +184,13 @@ object Bucket {
       implicit liftIO: LiftIO[F],
       F: Monad[F]
     ): F[Boolean] =
-      if (read(bucketId).shouldUpdate(node, pingExpiresIn)) {
-        run(bucketId, Bucket.update(node, rpc, pingExpiresIn))
-      } else {
-        false.pure[F]
-      }
+      read(bucketId).map(_.shouldUpdate(node, pingExpiresIn)).flatMap {
+        case true ⇒
+          run(bucketId, Bucket.update(node, rpc, pingExpiresIn))
 
+        case false ⇒
+          false.pure[F]
+      }
   }
 
 }

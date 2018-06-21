@@ -17,9 +17,10 @@
 
 package fluence.kad
 
-import cats.{Applicative, Show}
+import cats.{Monad, Show}
 import cats.data.StateT
 import cats.syntax.eq._
+import cats.syntax.flatMap._
 import cats.syntax.functor._
 import fluence.kad.protocol.{Key, Node}
 
@@ -69,8 +70,8 @@ object Siblings {
    * Read operations over current Siblings state
    * @tparam C Contact
    */
-  trait ReadOps[C] {
-    def read: Siblings[C]
+  trait ReadOps[F[_], C] {
+    def read: F[Siblings[C]]
   }
 
   /**
@@ -78,7 +79,7 @@ object Siblings {
    * @tparam F Effect type
    * @tparam C Contact
    */
-  trait WriteOps[F[_], C] extends ReadOps[C] {
+  trait WriteOps[F[_], C] extends ReadOps[F, C] {
     protected def run[T](mod: StateT[F, Siblings[C], T]): F[T]
 
     /**
@@ -87,7 +88,10 @@ object Siblings {
      * @param F Effect
      * @return True if node is in Siblings after update
      */
-    def add(node: Node[C])(implicit F: Applicative[F]): F[Boolean] =
-      run(StateT.modify(_.add(node))).map(_ ⇒ read.contains(node.key))
+    def add(node: Node[C])(implicit F: Monad[F]): F[Boolean] =
+      for {
+        _ ← run(StateT.modify(_.add(node)))
+        ss ← read
+      } yield ss.contains(node.key)
   }
 }

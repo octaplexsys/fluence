@@ -20,11 +20,10 @@ package fluence.kad
 import java.time.Instant
 
 import cats.data.StateT
-import cats.effect.IO
+import cats.effect.{ExitCase, IO}
+import cats.effect.concurrent.MVar
 import cats.kernel.Monoid
 import fluence.kad.protocol.{KademliaRpc, Key, Node}
-import monix.eval.{MVar, Task}
-import monix.execution.atomic.AtomicAny
 
 import scala.language.implicitConversions
 
@@ -41,17 +40,17 @@ object KademliaMVar {
    * @param checkNode     Node could be saved to RoutingTable only if checker returns F[ true ]
    * @tparam C Contact info
    */
-  def apply[C](
+  def apply[F[_], C](
     nodeId: Key,
-    contact: IO[C],
+    contact: F[C],
     rpcForContact: C ⇒ KademliaRpc[C],
     conf: KademliaConf,
-    checkNode: Node[C] ⇒ IO[Boolean]
-  ): Kademlia[Task, C] = {
-    implicit val bucketOps: Bucket.WriteOps[Task, C] = MVarBucketOps.task[C](conf.maxBucketSize)
-    implicit val siblingOps: Siblings.WriteOps[Task, C] = KademliaMVar.siblingsOps(nodeId, conf.maxSiblingsSize)
+    checkNode: Node[C] ⇒ F[Boolean]
+  ): Kademlia[F, C] = {
+    implicit val bucketOps: Bucket.WriteOps[IO, C] = MVarBucketOps(conf.maxBucketSize)
+    implicit val siblingOps: Siblings.WriteOps[IO, C] = KademliaMVar.siblingsOps(nodeId, conf.maxSiblingsSize)
 
-    Kademlia[Task, Task.Par, C](
+    Kademlia[IO, IO.Par, C](
       nodeId,
       conf.parallelism,
       conf.pingExpiresIn,
@@ -73,7 +72,7 @@ object KademliaMVar {
     rpc: C ⇒ KademliaRpc[C],
     conf: KademliaConf,
     checkNode: Node[C] ⇒ IO[Boolean]
-  ): Kademlia[Task, C] =
+  ): Kademlia[IO, C] =
     apply[C](
       Monoid.empty[Key],
       IO.raiseError(new IllegalStateException("Client may not have a Contact")),
@@ -91,18 +90,18 @@ object KademliaMVar {
    * @tparam S State
    * @tparam T Return value
    */
-  private def runOnMVar[S, T](mvar: MVar[S], mod: StateT[Task, S, T], updateRead: S ⇒ Unit): Task[T] =
-    mvar.take.flatMap { init ⇒
-      // Run modification
-      mod.run(init).onErrorHandleWith { err ⇒
-        // In case modification failed, write initial value back to MVar
-        mvar.put(init).flatMap(_ ⇒ Task.raiseError(err))
+  private def runOnMVar[S, T](mvar: MVar[IO, S], mod: StateT[IO, S, T], updateRead: S ⇒ Unit): IO[T] =
+    mvar.take.bracketCase { init ⇒
+      mod.run(init).flatMap {
+        case (updated, value) ⇒
+          // Update read and write states
+          updateRead(updated)
+          mvar.put(updated).map(_ ⇒ value)
       }
-    }.flatMap {
-      case (updated, value) ⇒
-        // Update read and write states
-        updateRead(updated)
-        mvar.put(updated).map(_ ⇒ value)
+    } {
+      // In case of error, revert initial value
+      case (_, ExitCase.Completed) ⇒ IO.unit
+      case (init, _) ⇒ mvar.put(init)
     }
 
   /**
@@ -112,12 +111,12 @@ object KademliaMVar {
    * @param maxSiblings Max number of closest siblings to store
    * @tparam C Node contacts type
    */
-  private def siblingsOps[C](nodeId: Key, maxSiblings: Int): Siblings.WriteOps[Task, C] =
-    new Siblings.WriteOps[Task, C] {
+  private def siblingsOps[C](nodeId: Key, maxSiblings: Int): Siblings.WriteOps[IO, C] =
+    new Siblings.WriteOps[IO, C] {
       private val readState = AtomicAny(Siblings[C](nodeId, maxSiblings))
-      private val writeState = MVar(Siblings[C](nodeId, maxSiblings)).memoize
+      private val writeState = MVar.of(Siblings[C](nodeId, maxSiblings)).memoize
 
-      override protected def run[T](mod: StateT[Task, Siblings[C], T]): Task[T] =
+      override protected def run[T](mod: StateT[IO, Siblings[C], T]): IO[T] =
         for {
           ws ← writeState
           res ← runOnMVar(

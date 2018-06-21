@@ -17,7 +17,7 @@
 
 package fluence.kad
 
-import monix.eval.Task
+import scala.language.higherKinds
 
 object MVarBucketOps {
 
@@ -26,5 +26,5 @@ object MVarBucketOps {
    *
    * @param maxBucketSize Maximum number of nodes in a bucket
    */
-  def task[C](maxBucketSize: Int): Bucket.WriteOps[Task, C] = new TrieMapMVarBucketOps[C](maxBucketSize)
+  def apply[F[_], C](maxBucketSize: Int): F[Bucket.WriteOps[F, C]] = new TrieMapMVarBucketOps[F, C](maxBucketSize)
 }

@@ -25,7 +25,7 @@ import cats.syntax.functor._
 import cats.syntax.monoid._
 import cats.syntax.order._
 import cats.instances.list._
-import cats.{Monad, Parallel}
+import cats.{Applicative, Monad, Parallel}
 import fluence.kad.RoutingTable.CantJoinAnyNode
 import fluence.kad.protocol.{KademliaRpc, Key, Node}
 
@@ -39,26 +39,36 @@ import scala.language.higherKinds
  * RoutingTable describes how to route various requests over Kademlia network.
  * State is stored within [[Siblings]] and [[Bucket]], so there's no special case class.
  */
-class RoutingTable[C](nodeId: Key)(implicit SR: Siblings.ReadOps[C], BR: Bucket.ReadOps[C])
-    extends slogging.LazyLogging {
+class RoutingTable[C](nodeId: Key) extends slogging.LazyLogging {
 
   /**
    * Tries to route a key to a Contact, if it's known locally
    *
    * @param key Key to lookup
    */
-  def find(key: Key): Option[Node[C]] =
-    SR.read.find(key).orElse(BR.read(nodeId |+| key).find(key))
+  def find[F[_]: Applicative](
+    key: Key
+  )(implicit SR: Siblings.ReadOps[F, C], BR: Bucket.ReadOps[F, C]): F[Option[Node[C]]] =
+    Applicative[F]
+      .map2(
+        SR.read.map(_.find(key)),
+        BR.read(nodeId |+| key).map(_.find(key))
+      )(_ orElse _)
 
   /**
    * Performs local lookup for the key, returning a stream of closest known nodes to it
+   * TODO: use fs2 stream once it supports updated cats-effect for lazy streaming
    *
    * @param key Key to lookup
    * @return
    */
-  def lookup(key: Key): Stream[Node[C]] = {
+  def lookup[F[_]: Monad](
+    key: Key
+  )(implicit SR: Siblings.ReadOps[F, C], BR: Bucket.ReadOps[F, C]): F[Stream[Node[C]]] = {
 
     implicit val ordering: Ordering[Node[C]] = Node.relativeOrdering(key)
+
+    // TODO load everything so far
 
     // Build stream of neighbors, taken from buckets
     val bucketsStream = {
@@ -81,7 +91,7 @@ class RoutingTable[C](nodeId: Key)(implicit SR: Siblings.ReadOps[C], BR: Bucket.
 
     // Stream of neighbors, taken from siblings
     val siblingsStream =
-      SR.read.nodes.toStream.sorted
+      SR.read.map(_.nodes.toStream.sorted)
 
     def combine(left: Stream[Node[C]], right: Stream[Node[C]], seen: Set[Key] = Set.empty): Stream[Node[C]] =
       (left, right) match {
@@ -105,8 +115,11 @@ class RoutingTable[C](nodeId: Key)(implicit SR: Siblings.ReadOps[C], BR: Bucket.
    * @param key Key to lookup
    * @param moveAwayFrom Key to move away
    */
-  def lookupAway(key: Key, moveAwayFrom: Key): Stream[Node[C]] =
-    lookup(key).filter(n ⇒ (n.key |+| key) < (n.key |+| moveAwayFrom))
+  def lookupAway[F[_]: Monad](
+    key: Key,
+    moveAwayFrom: Key
+  )(implicit SR: Siblings.ReadOps[F, C], BR: Bucket.ReadOps[F, C]): Stream[Node[C]] =
+    lookup(key).map(_.filter(n ⇒ (n.key |+| key) < (n.key |+| moveAwayFrom)))
 
   /**
    * Locates the bucket responsible for given contact, and updates it using given ping function
